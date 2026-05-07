@@ -12,7 +12,13 @@
     # governed by Export-ModuleMember in the psm1, which takes precedence.
     # Both lists must stay in sync. The shared Module.Tests.ps1 in the
     # run-unit-tests action enforces this.
-    FunctionsToExport = @()
+    FunctionsToExport = @(
+        'Get-GitHubAppToken',
+        'Get-PendingDeployment',
+        'Invoke-GitHubApi',
+        'Invoke-RunnerTarballEnsure',
+        'Set-DeploymentStatus'
+    )
     CmdletsToExport   = @()
     AliasesToExport   = @()
 }
