@@ -16,6 +16,7 @@
         'Get-GitHubAppToken',
         'Get-PendingDeployment',
         'Invoke-GitHubApi',
+        'Invoke-RunnerTarballDeploy',
         'Invoke-RunnerTarballEnsure',
         'Set-DeploymentStatus'
     )

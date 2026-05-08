@@ -11,7 +11,8 @@
       - Get-GitHubAppToken        - mints a short-lived GitHub App token
       - Get-PendingDeployment     - polls for the oldest non-terminal deployment
       - Set-DeploymentStatus      - posts a status update to a deployment
-      - Invoke-RunnerTarballEnsure - caches the actions/runner tarball locally
+      - Invoke-RunnerTarballDeploy  - deploys a runner tarball to a VM's cache
+      - Invoke-RunnerTarballEnsure  - caches the actions/runner tarball locally
 
     Each function lives in its own file under Public\ and is dot-sourced
     below so diffs stay focused on a single function per commit.
@@ -23,8 +24,9 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\Public\Invoke-GitHubApi.ps1"
 . "$PSScriptRoot\Public\Get-GitHubAppToken.ps1"
 . "$PSScriptRoot\Public\Get-PendingDeployment.ps1"
-. "$PSScriptRoot\Public\Set-DeploymentStatus.ps1"
+. "$PSScriptRoot\Public\Invoke-RunnerTarballDeploy.ps1"
 . "$PSScriptRoot\Public\Invoke-RunnerTarballEnsure.ps1"
+. "$PSScriptRoot\Public\Set-DeploymentStatus.ps1"
 
 # Export-ModuleMember controls what is actually callable after Import-Module.
 # It takes precedence over FunctionsToExport in the psd1 at runtime, so both
@@ -36,6 +38,7 @@ Export-ModuleMember -Function @(
     'Get-GitHubAppToken',
     'Get-PendingDeployment',
     'Invoke-GitHubApi',
+    'Invoke-RunnerTarballDeploy',
     'Invoke-RunnerTarballEnsure',
     'Set-DeploymentStatus'
 )
