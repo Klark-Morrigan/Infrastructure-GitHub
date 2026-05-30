@@ -1,7 +1,7 @@
 BeforeAll {
     function Invoke-GitHubApi { param($Token, $Endpoint, $Uri, $Method, $Body) }
 
-    # ConvertTo-Array lives in Infrastructure.Common; stub it here so this
+    # ConvertTo-Array lives in PowerShell.Common; stub it here so this
     # unit test has no cross-module file-system dependency. The stub matches
     # the real function's contract: wraps the input in an array, returning
     # @() for $null.
