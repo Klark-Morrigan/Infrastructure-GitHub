@@ -60,6 +60,14 @@ git clone https://github.com/VitaliiAndreev/Common-PowerShell .ci-common
 .\scripts\Run-IntegrationTests-AgainstDockerTarget.ps1
 ```
 
+The lint suite (yamllint / actionlint / action-validator / shellcheck) runs
+locally via Git Bash and Docker; it shims to `Common-Automation`'s engine, so
+that repo must be a sibling checkout (`..\Common-Automation`):
+
+```bash
+scripts/run-lint.sh
+```
+
 ### CI
 
 Three thin CI workflows delegate to Common's reusable workflows:
@@ -69,6 +77,8 @@ Three thin CI workflows delegate to Common's reusable workflows:
 | `ci.yml` | PR / manual | `ci-powershell.yml` |
 | `ci-docker-host.yml` | PR / manual | `ci-powershell-docker-host.yml` |
 | `ci-docker-target.yml` | PR / manual | `ci-powershell-docker-target.yml` |
+| `ci-yaml.yml` | PR / manual | Common-Automation `ci-yaml.yml` (actionlint, action-validator, yamllint, ansible-lint) |
+| `ci-bash.yml` | PR / manual | Common-Automation `ci-bash.yml` (shellcheck on `scripts\` shims, check-sh-executable, bats) |
 
 ### Release
 
