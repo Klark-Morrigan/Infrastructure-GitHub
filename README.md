@@ -15,7 +15,7 @@ PowerShell module providing GitHub API utilities for infrastructure repos.
 
 ## Overview
 
-This module is extracted from `PowerShell.Common` to give GitHub-specific
+This module is extracted from `Common.PowerShell` to give GitHub-specific
 functions their own cohesion boundary. It is published to PSGallery and
 consumed by other repos.
 
@@ -40,11 +40,11 @@ Import-Module Infrastructure.GitHub
 
 ### Prerequisites
 
-Clone `PowerShell-Common` at `.ci-common` once before running any local
+Clone `Common-PowerShell` at `.ci-common` once before running any local
 test runner:
 
 ```powershell
-git clone https://github.com/VitaliiAndreev/PowerShell-Common .ci-common
+git clone https://github.com/VitaliiAndreev/Common-PowerShell .ci-common
 ```
 
 ### Running Tests
