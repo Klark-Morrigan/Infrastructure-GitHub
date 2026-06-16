@@ -15,7 +15,7 @@ PowerShell module providing GitHub API utilities for infrastructure repos.
 
 ## Overview
 
-This module is extracted from `PowerShell.Common` to give GitHub-specific
+This module is extracted from `Common.PowerShell` to give GitHub-specific
 functions their own cohesion boundary. It is published to PSGallery and
 consumed by other repos.
 
@@ -40,11 +40,11 @@ Import-Module Infrastructure.GitHub
 
 ### Prerequisites
 
-Clone `PowerShell-Common` at `.ci-common` once before running any local
+Clone `Common-PowerShell` at `.ci-common` once before running any local
 test runner:
 
 ```powershell
-git clone https://github.com/VitaliiAndreev/PowerShell-Common .ci-common
+git clone https://github.com/VitaliiAndreev/Common-PowerShell .ci-common
 ```
 
 ### Running Tests
@@ -60,6 +60,21 @@ git clone https://github.com/VitaliiAndreev/PowerShell-Common .ci-common
 .\scripts\Run-IntegrationTests-AgainstDockerTarget.ps1
 ```
 
+The local CI checks run via three sibling shims (Git Bash and Docker). Each shims
+to `Common-Automation`'s engine - pointed at this repo through
+`COMMON_AUTOMATION_TARGET_REPO` - so that repo must be a sibling checkout
+(`..\Common-Automation`), and local cannot drift from CI:
+
+```bash
+# PRIMARY local entry: full lint suite AND bats tests
+# (local equivalent of ci-yaml.yml + ci-bash.yml).
+scripts/run-ci-yaml-and-bash.sh
+
+# Or run a single half:
+scripts/run-lint-yaml-and-bash.sh   # LINT half (shellcheck/actionlint/action-validator/yamllint/ansible-lint)
+scripts/run-tests-bash.sh           # bats TEST half
+```
+
 ### CI
 
 Three thin CI workflows delegate to Common's reusable workflows:
@@ -69,13 +84,21 @@ Three thin CI workflows delegate to Common's reusable workflows:
 | `ci.yml` | PR / manual | `ci-powershell.yml` |
 | `ci-docker-host.yml` | PR / manual | `ci-powershell-docker-host.yml` |
 | `ci-docker-target.yml` | PR / manual | `ci-powershell-docker-target.yml` |
+| `ci-yaml.yml` | PR / manual | Common-Automation `ci-yaml.yml` (actionlint, action-validator, yamllint, ansible-lint) |
+| `ci-bash.yml` | PR / manual | Common-Automation `ci-bash.yml` (shellcheck on `scripts\` shims, check-sh-executable, bats) |
 
 ### Release
 
-Pushing a change to `Infrastructure.GitHub/Infrastructure.GitHub.psd1` on
-`master` with a new `ModuleVersion` triggers `release.yml`, which:
+Releases are CHANGELOG.md-driven. To ship a version: promote the
+[`[Unreleased]`](CHANGELOG.md) section in [CHANGELOG.md](CHANGELOG.md) to the
+new version + date, bump `ModuleVersion` in
+`Infrastructure.GitHub/Infrastructure.GitHub.psd1` to match, and merge to
+`master`. The manifest change triggers `release.yml`, which:
 
-1. Checks the version is new.
-2. Runs all three CI workflows.
-3. Tags the commit via Common's `tag.yml`.
-4. Publishes to PSGallery via Common's `publish.yml`.
+1. Checks the version is new (`check-version-is-new`).
+2. Asserts the manifest version matches the top CHANGELOG.md section
+   (`assert-changelog-version`) - the release fails here if notes are
+   missing, so they can never lag the release.
+3. Runs all three CI workflows.
+4. Tags, publishes to PSGallery, and cuts a GitHub Release (with notes
+   from CHANGELOG.md) via Common's `release-tail.yml`.

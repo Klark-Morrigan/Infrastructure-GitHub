@@ -1,0 +1,30 @@
+# Changelog
+
+All notable changes to `Infrastructure.GitHub` are documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org).
+
+Add entries under `[Unreleased]` as changes merge; at release the
+`[Unreleased]` heading is promoted to the new version + date and a fresh
+`[Unreleased]` is opened above it. Changes prior to 0.2.0 live in the git
+history and the tag list.
+
+## [Unreleased]
+
+## [0.2.0] - 2026-05-08
+
+### Added
+- Baseline changelog. This section pins the current released surface so the
+  release pipeline's changelog gate and GitHub Release have notes to anchor
+  on; earlier history remains in the git log and tag list.
+
+### Notes
+- Public surface: `Get-GitHubAppToken`, `Get-PendingDeployment`,
+  `Invoke-GitHubApi`, `Invoke-RunnerTarballDeploy`,
+  `Invoke-RunnerTarballEnsure`, `Set-DeploymentStatus` - GitHub App token
+  auth, Actions deployment/API helpers, and self-hosted runner tarball
+  deploy/ensure used by the infrastructure repos.
+
+[Unreleased]: https://github.com/VitaliiAndreev/Infrastructure-GitHub/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/VitaliiAndreev/Infrastructure-GitHub/compare/0.1.0...0.2.0

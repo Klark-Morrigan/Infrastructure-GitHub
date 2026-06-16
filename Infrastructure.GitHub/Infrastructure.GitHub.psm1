@@ -3,7 +3,7 @@
     GitHub API utilities for infrastructure repos.
 
 .DESCRIPTION
-    Provides GitHub-specific functions extracted from PowerShell.Common
+    Provides GitHub-specific functions extracted from Common.PowerShell
     to keep each module cohesive and single-purpose.
 
     Current functions:
