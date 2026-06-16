@@ -60,12 +60,19 @@ git clone https://github.com/VitaliiAndreev/Common-PowerShell .ci-common
 .\scripts\Run-IntegrationTests-AgainstDockerTarget.ps1
 ```
 
-The lint suite (yamllint / actionlint / action-validator / shellcheck) runs
-locally via Git Bash and Docker; it shims to `Common-Automation`'s engine, so
-that repo must be a sibling checkout (`..\Common-Automation`):
+The local CI checks run via three sibling shims (Git Bash and Docker). Each shims
+to `Common-Automation`'s engine - pointed at this repo through
+`COMMON_AUTOMATION_TARGET_REPO` - so that repo must be a sibling checkout
+(`..\Common-Automation`), and local cannot drift from CI:
 
 ```bash
-scripts/run-lint.sh
+# PRIMARY local entry: full lint suite AND bats tests
+# (local equivalent of ci-yaml.yml + ci-bash.yml).
+scripts/run-ci-yaml-and-bash.sh
+
+# Or run a single half:
+scripts/run-lint-yaml-and-bash.sh   # LINT half (shellcheck/actionlint/action-validator/yamllint/ansible-lint)
+scripts/run-tests-bash.sh           # bats TEST half
 ```
 
 ### CI
