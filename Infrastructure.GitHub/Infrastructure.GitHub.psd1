@@ -1,7 +1,7 @@
 @{
-    ModuleVersion        = '0.2.0'
+    ModuleVersion        = '1.0.0'
     GUID                 = 'f02caa94-35f8-42c4-a477-d8199cd23c2e'
-    Author               = 'Vitaly Andrev'
+    Author               = 'Klark Morrigan'
     Description          = 'GitHub API utilities for infrastructure repos.'
     PowerShellVersion    = '7.0'
     CompatiblePSEditions = @('Core')
@@ -27,9 +27,9 @@
     # the source repository.
     PrivateData = @{
         PSData = @{
-            ProjectUri   = 'https://github.com/VitaliiAndreev/Infrastructure-GitHub'
-            LicenseUri   = 'https://github.com/VitaliiAndreev/Infrastructure-GitHub/blob/master/LICENSE'
-            ReleaseNotes = 'https://github.com/VitaliiAndreev/Infrastructure-GitHub/releases'
+            ProjectUri   = 'https://github.com/Klark-Morrigan/Infrastructure-GitHub'
+            LicenseUri   = 'https://github.com/Klark-Morrigan/Infrastructure-GitHub/blob/master/LICENSE'
+            ReleaseNotes = 'https://github.com/Klark-Morrigan/Infrastructure-GitHub/releases'
         }
     }
 }
