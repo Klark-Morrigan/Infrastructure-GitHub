@@ -222,4 +222,91 @@ Describe 'Get-PendingDeployment' {
             $script:_tokens | ForEach-Object { $_ | Should -Be 'bearer_tok' }
         }
     }
+
+    # ------------------------------------------------------------------
+    Context 'CreatedSince cutoff' {
+    # ------------------------------------------------------------------
+        # GitHub never deletes deployments, so the list endpoint keeps
+        # returning a page of historical, terminal deployments. -CreatedSince
+        # skips the per-deployment status fetch for stale ones; that single
+        # change is what stops the N+1 fan-out from exhausting the rate limit.
+
+        It 'does not fetch statuses for a deployment created before the cutoff' {
+            $recentIso = [DateTimeOffset]::UtcNow.ToString('o')
+            Mock Invoke-GitHubApi {
+                if ($Endpoint -like '*/statuses') { return @() }
+                return @(
+                    [PSCustomObject]@{ id = 1; created_at = '2020-01-01T00:00:00Z' },
+                    [PSCustomObject]@{ id = 2; created_at = $recentIso }
+                )
+            }
+
+            Get-PendingDeployment `
+                -Token 'tok' -Owner 'org' -Repo 'repo' -Environment 'e2e-workstation' `
+                -CreatedSince ([DateTime]::UtcNow.AddHours(-1))
+
+            # Only the recent deployment (id=2) is worth a status call.
+            Should -Invoke Invoke-GitHubApi -Times 0 -ParameterFilter {
+                $Endpoint -like '*/deployments/1/statuses'
+            }
+            Should -Invoke Invoke-GitHubApi -Times 1 -ParameterFilter {
+                $Endpoint -like '*/deployments/2/statuses'
+            }
+        }
+
+        It 'returns the recent pending deployment and skips the stale ones' {
+            $recentIso = [DateTimeOffset]::UtcNow.ToString('o')
+            Mock Invoke-GitHubApi {
+                if ($Endpoint -like '*/statuses') { return @() }   # id=2 is pending
+                return @(
+                    [PSCustomObject]@{ id = 1; created_at = '2020-01-01T00:00:00Z' },
+                    [PSCustomObject]@{ id = 2; created_at = $recentIso }
+                )
+            }
+
+            $result = Get-PendingDeployment `
+                -Token 'tok' -Owner 'org' -Repo 'repo' -Environment 'e2e-workstation' `
+                -CreatedSince ([DateTime]::UtcNow.AddHours(-1))
+
+            $result.id | Should -Be 2
+        }
+
+        It 'returns null when every in-window deployment is terminal even if a stale one looks pending' {
+            $recentIso = [DateTimeOffset]::UtcNow.ToString('o')
+            Mock Invoke-GitHubApi {
+                # id=2 (recent) is terminal; id=1 (stale) would be pending but
+                # must never be reached because the cutoff skips it.
+                if ($Endpoint -like '*/deployments/2/statuses') {
+                    return @([PSCustomObject]@{ state = 'success' })
+                }
+                if ($Endpoint -like '*/statuses') { return @() }
+                return @(
+                    [PSCustomObject]@{ id = 1; created_at = '2020-01-01T00:00:00Z' },
+                    [PSCustomObject]@{ id = 2; created_at = $recentIso }
+                )
+            }
+
+            $result = Get-PendingDeployment `
+                -Token 'tok' -Owner 'org' -Repo 'repo' -Environment 'e2e-workstation' `
+                -CreatedSince ([DateTime]::UtcNow.AddHours(-1))
+
+            $result | Should -BeNullOrEmpty
+        }
+
+        It 'still checks a deployment whose created_at is missing (never skipped on absent timestamp)' {
+            # Guarded property access must treat an absent created_at as
+            # in-window, so a deployment is never skipped just because the
+            # field was missing from the payload.
+            Mock Invoke-GitHubApi {
+                if ($Endpoint -like '*/statuses') { return @() }
+                return @([PSCustomObject]@{ id = 5 })   # no created_at
+            }
+
+            $result = Get-PendingDeployment `
+                -Token 'tok' -Owner 'org' -Repo 'repo' -Environment 'e2e-workstation' `
+                -CreatedSince ([DateTime]::UtcNow.AddHours(-1))
+
+            $result.id | Should -Be 5
+        }
+    }
 }

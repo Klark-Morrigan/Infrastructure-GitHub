@@ -10,6 +10,13 @@
 #   The polling agent calls this on each tick. When a deployment is
 #   returned the agent posts an 'in_progress' status, runs the tests,
 #   then calls Set-DeploymentStatus with the final result.
+#
+#   Cost note: GitHub never deletes deployments, so an environment's list
+#   endpoint keeps returning a full page of historical, already-terminal
+#   deployments. Fetching every one's statuses on every poll is an
+#   N+1 fan-out that exhausts the API rate limit. -CreatedSince lets the
+#   caller skip the status fetch for deployments older than the cutoff,
+#   collapsing a quiet poll to a single list call.
 # ---------------------------------------------------------------------------
 
 function Get-PendingDeployment {
@@ -30,7 +37,17 @@ function Get-PendingDeployment {
         # The deployment environment name to filter by.
         # Must match the 'environment' field on the deployment exactly.
         [Parameter(Mandatory)]
-        [string] $Environment
+        [string] $Environment,
+
+        # Skip the per-deployment status fetch for any deployment created
+        # before this UTC instant. A pending deployment is always recent, so
+        # anything older than the cutoff cannot be the work we are waiting
+        # for - and historical deployments are all terminal anyway. Default
+        # MinValue checks every returned deployment (the prior behaviour);
+        # the polling agent passes a recent cutoff to stop the N+1 fan-out
+        # over months of accumulated history from exhausting the rate limit.
+        [Parameter()]
+        [DateTime] $CreatedSince = [DateTime]::MinValue
     )
 
     $terminalStatuses = @('success', 'failure', 'error', 'inactive')
@@ -40,6 +57,18 @@ function Get-PendingDeployment {
         -Endpoint "repos/$Owner/$Repo/deployments?environment=$Environment"
 
     foreach ($deployment in ($deployments | Sort-Object id)) {
+        # Cheap, call-free skip of stale deployments before spending an API
+        # call on their statuses. Property access is guarded so callers (and
+        # tests) whose deployment objects omit created_at keep working; an
+        # absent timestamp is treated as in-window so we never skip a real
+        # pending deployment just because the field was missing.
+        if ($CreatedSince -ne [DateTime]::MinValue -and
+            $deployment.PSObject.Properties['created_at'] -and
+            $deployment.created_at) {
+            $createdAt = [DateTimeOffset] $deployment.created_at
+            if ($createdAt.UtcDateTime -lt $CreatedSince) { continue }
+        }
+
         $statuses = Invoke-GitHubApi `
             -Token    $Token `
             -Endpoint "repos/$Owner/$Repo/deployments/$($deployment.id)/statuses"
