@@ -11,12 +11,10 @@
 #   returned the agent posts an 'in_progress' status, runs the tests,
 #   then calls Set-DeploymentStatus with the final result.
 #
-#   Cost note: GitHub never deletes deployments, so an environment's list
-#   endpoint keeps returning a full page of historical, already-terminal
-#   deployments. Fetching every one's statuses on every poll is an
-#   N+1 fan-out that exhausts the API rate limit. -CreatedSince lets the
-#   caller skip the status fetch for deployments older than the cutoff,
-#   collapsing a quiet poll to a single list call.
+#   GitHub never deletes deployments, so the list endpoint returns a full
+#   page of historical, terminal deployments. -CreatedSince lets the caller
+#   skip the status fetch for ones older than the cutoff, keeping a quiet
+#   poll to a single list call instead of an N+1 fan-out.
 # ---------------------------------------------------------------------------
 
 function Get-PendingDeployment {
@@ -41,11 +39,9 @@ function Get-PendingDeployment {
 
         # Skip the per-deployment status fetch for any deployment created
         # before this UTC instant. A pending deployment is always recent, so
-        # anything older than the cutoff cannot be the work we are waiting
-        # for - and historical deployments are all terminal anyway. Default
-        # MinValue checks every returned deployment (the prior behaviour);
-        # the polling agent passes a recent cutoff to stop the N+1 fan-out
-        # over months of accumulated history from exhausting the rate limit.
+        # older ones cannot be the work we are waiting for (and are terminal
+        # anyway). Default MinValue checks every deployment; the polling
+        # agent passes a recent cutoff to keep each poll a single list call.
         [Parameter()]
         [DateTime] $CreatedSince = [DateTime]::MinValue
     )
