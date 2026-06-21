@@ -81,9 +81,7 @@ Thin local CI workflows delegate to the shared reusable workflows:
 
 | Workflow | Trigger | Calls |
 |---|---|---|
-| `ci-powershell.yml` | PR / manual | Common-PowerShell `ci-powershell.yml` |
-| `ci-powershell-docker-host.yml` | PR / manual | Common-PowerShell `ci-powershell-docker-host.yml` |
-| `ci-powershell-docker-target.yml` | PR / manual | Common-PowerShell `ci-powershell-docker-target.yml` |
+| `ci-powershell.yml` | PR / manual | Common-PowerShell `ci-powershell.yml` (unit job, then a Docker integration job gated behind it) |
 | `ci-yaml.yml` | PR / manual | Common-Automation `ci-yaml.yml` (actionlint, action-validator, yamllint, ansible-lint) |
 | `ci-bash.yml` | PR / manual | Common-Automation `ci-bash.yml` (shellcheck on `scripts\` shims, check-sh-executable, bats) |
 
