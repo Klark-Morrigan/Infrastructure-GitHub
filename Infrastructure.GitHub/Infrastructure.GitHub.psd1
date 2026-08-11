@@ -14,6 +14,7 @@
     # run-unit-tests action enforces this.
     FunctionsToExport = @(
         'Get-GitHubAppToken',
+        'Get-GitHubRunnerActivity',
         'Get-PendingDeployment',
         'Invoke-GitHubApi',
         'Invoke-RunnerTarballDeploy',
