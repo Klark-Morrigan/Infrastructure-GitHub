@@ -1,5 +1,5 @@
 @{
-    ModuleVersion        = '1.1.0'
+    ModuleVersion        = '1.2.0'
     GUID                 = 'f02caa94-35f8-42c4-a477-d8199cd23c2e'
     Author               = 'Klark Morrigan'
     Description          = 'GitHub API utilities for infrastructure repos.'
@@ -14,6 +14,7 @@
     # run-unit-tests action enforces this.
     FunctionsToExport = @(
         'Get-GitHubAppToken',
+        'Get-GitHubRunnerActivity',
         'Get-PendingDeployment',
         'Invoke-GitHubApi',
         'Invoke-RunnerTarballDeploy',

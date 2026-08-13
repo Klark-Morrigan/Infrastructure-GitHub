@@ -7,6 +7,7 @@ PowerShell module providing GitHub API utilities for infrastructure repos.
 - [Overview](#overview)
 - [Functions](#functions)
 - [Usage](#usage)
+  - [Polling without exhausting the rate limit](#polling-without-exhausting-the-rate-limit)
 - [Development](#development)
   - [Prerequisites](#prerequisites)
   - [Running Tests](#running-tests)
@@ -23,11 +24,17 @@ consumed by other repos.
 
 | Function | Description |
 |---|---|
-| `Invoke-GitHubApi` | General-purpose GitHub REST API caller. Handles auth, `User-Agent`, and JSON serialization. Accepts `-Endpoint` (relative path) or `-Uri` (full URL). |
+| `Invoke-GitHubApi` | General-purpose GitHub REST API caller. Handles auth, `User-Agent`, and JSON serialization. Accepts `-Endpoint` (relative path) or `-Uri` (full URL). `-IncludeResponseDetail` returns headers and status code for conditional (ETag) requests. |
 | `Get-GitHubAppToken` | Mints a short-lived installation access token for a GitHub App using RS256 JWT signing. Returns `Token` and `ExpiresAt`. |
+| `Get-GitHubRunnerActivity` | One row per registered self-hosted runner, joined to the job it is executing (workflow, job, current step, elapsed), plus the jobs queued against that fleet. Built for repeated polling. |
 | `Get-PendingDeployment` | Returns the oldest non-terminal deployment for a given repo and environment, or `$null` when none is pending. |
 | `Set-DeploymentStatus` | Posts a status update (`in_progress`, `success`, `failure`, etc.) to an existing deployment. |
 | `Invoke-RunnerTarballEnsure` | Ensures the `actions/runner` tarball for a given version is present in a local cache directory, downloading it if absent. |
+
+Helpers under `Infrastructure.GitHub\Private\` (response parsing under
+`StrictMode`, header reads, the conditional-GET wrapper) are implementation
+detail: they follow the same one-function-per-file layout but are absent from
+both export lists, so adding one is not a public contract change.
 
 ## Usage
 
@@ -35,6 +42,30 @@ consumed by other repos.
 Install-Module -Name Infrastructure.GitHub -MinimumVersion 0.1.0
 Import-Module Infrastructure.GitHub
 ```
+
+### Polling without exhausting the rate limit
+
+`Get-GitHubRunnerActivity` is designed to be called on a loop. Hand it the
+same `-Cache` hashtable every tick: it stores each list response's ETag and
+re-sends it as `If-None-Match`, so an unchanged runner list or queue answers
+`304 Not Modified` - which GitHub does not charge against the hourly budget.
+The remaining budget comes back in `.RateLimit` on every call.
+
+```powershell
+$cache = @{}
+while ($true) {
+    $activity = Get-GitHubRunnerActivity -Token $token `
+                    -Repository 'Klark-Morrigan/Common-Automation' -Cache $cache
+
+    $activity.Runners | Format-Table Name, Status, Busy, WorkflowName, JobName, CurrentStep
+    "queued: $($activity.QueuedJobs.Count)   budget: $($activity.RateLimit.Remaining)"
+
+    Start-Sleep -Seconds 10
+}
+```
+
+A repository that cannot be polled (auth, rate limit, network) lands in
+`.Failures` instead of throwing, so one bad repo does not blank the rest.
 
 ## Development
 

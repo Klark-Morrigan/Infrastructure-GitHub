@@ -13,8 +13,24 @@
 #   -Token accepts both PATs and GitHub App installation tokens; both
 #   are bearer tokens and are interchangeable at the HTTP level.
 #
-#   Returns the raw Invoke-RestMethod response. Callers extract the
-#   fields they need (.token, .runners, .id, etc.).
+#   By default it returns the raw Invoke-RestMethod response, and callers
+#   extract the fields they need (.token, .runners, .id, etc.).
+#
+#   -Header and -IncludeResponseDetail exist for conditional (ETag) requests,
+#   which a polling caller needs to stay inside the hourly rate limit: a 304
+#   Not Modified is not charged against the budget, but observing one requires
+#   sending a request header and reading back both the response headers and a
+#   non-success status code. Both are opt-in and change nothing for callers
+#   that omit them.
+#
+#   The response detail is RETURNED rather than published through
+#   -*Variable out-parameters mirroring Invoke-RestMethod's own. That shape
+#   was tried and does not work here: this function ships inside a module, so
+#   a function running in module session state cannot write a variable into
+#   the scope of a script that imported it. `Set-Variable -Scope 1` lands in
+#   the module's own parent scope and $PSCmdlet.SessionState.PSVariable.Set
+#   lands in the callee's - both silently, with the caller's variable left
+#   untouched. A return value crosses the boundary unambiguously.
 # ---------------------------------------------------------------------------
 
 function Invoke-GitHubApi {
@@ -37,7 +53,26 @@ function Invoke-GitHubApi {
         [string] $Method = 'Get',
 
         [Parameter()]
-        [hashtable] $Body
+        [hashtable] $Body,
+
+        # Extra request headers, merged over the three defaults below. Covers
+        # per-call concerns the fixed set cannot express - 'If-None-Match' for
+        # a conditional GET, or the 'Accept' / 'X-GitHub-Api-Version' pins.
+        # A key that collides with a default replaces it, so a caller that
+        # must send a different Content-Type still can.
+        [Parameter()]
+        [hashtable] $Header,
+
+        # Return an object carrying .Content, .Headers, and .StatusCode
+        # instead of the bare body.
+        #
+        # It also disables Invoke-RestMethod's built-in error check: the
+        # status this mainly exists to observe - 304 Not Modified - is a
+        # non-success code that would otherwise throw before the caller could
+        # see it. The trade is that the caller then owns ALL status handling,
+        # 4xx and 5xx included; nothing throws on a bad response any more.
+        [Parameter()]
+        [switch] $IncludeResponseDetail
     )
 
     $hasEndpoint = $PSBoundParameters.ContainsKey('Endpoint')
@@ -52,14 +87,22 @@ function Invoke-GitHubApi {
 
     $resolvedUri = if ($hasEndpoint) { "https://api.github.com/$Endpoint" } else { $Uri }
 
+    $headers = @{
+        'Authorization' = "Bearer $Token"
+        'User-Agent'    = 'Infrastructure'
+        'Content-Type'  = 'application/json'
+    }
+
+    if ($PSBoundParameters.ContainsKey('Header')) {
+        foreach ($extra in $Header.GetEnumerator()) {
+            $headers[$extra.Key] = $extra.Value
+        }
+    }
+
     $params = @{
         Uri         = $resolvedUri
         Method      = $Method
-        Headers     = @{
-            'Authorization' = "Bearer $Token"
-            'User-Agent'    = 'Infrastructure'
-            'Content-Type'  = 'application/json'
-        }
+        Headers     = $headers
         ErrorAction = 'Stop'
     }
 
@@ -67,5 +110,28 @@ function Invoke-GitHubApi {
         $params['Body'] = $Body | ConvertTo-Json -Depth 10 -Compress
     }
 
-    Invoke-RestMethod @params
+    if (-not $IncludeResponseDetail) {
+        return Invoke-RestMethod @params
+    }
+
+    # Invoke-RestMethod writes these into the scope of ITS caller, which is
+    # this function - a direct, same-session-state hop that does work.
+    $localHeadersName = 'gitHubApiResponseHeaders'
+    $localStatusName  = 'gitHubApiStatusCode'
+
+    $params['ResponseHeadersVariable'] = $localHeadersName
+    $params['StatusCodeVariable']      = $localStatusName
+    $params['SkipHttpErrorCheck']      = $true
+
+    $content = Invoke-RestMethod @params
+
+    # Get-Variable rather than a bare reference: a mocked Invoke-RestMethod
+    # (the unit suites) never assigns these, and Set-StrictMode -Version
+    # Latest makes reading an unassigned variable a terminating error.
+    # SilentlyContinue yields $null, the honest answer for "no headers".
+    [PSCustomObject]@{
+        Content    = $content
+        Headers    = Get-Variable -Name $localHeadersName -ValueOnly -ErrorAction SilentlyContinue
+        StatusCode = Get-Variable -Name $localStatusName  -ValueOnly -ErrorAction SilentlyContinue
+    }
 }

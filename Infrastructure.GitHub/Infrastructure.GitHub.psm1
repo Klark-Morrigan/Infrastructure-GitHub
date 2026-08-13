@@ -9,6 +9,7 @@
     Current functions:
       - Invoke-GitHubApi          - general-purpose GitHub REST API caller
       - Get-GitHubAppToken        - mints a short-lived GitHub App token
+      - Get-GitHubRunnerActivity  - self-hosted runners joined to their jobs
       - Get-PendingDeployment     - polls for the oldest non-terminal deployment
       - Set-DeploymentStatus      - posts a status update to a deployment
       - Invoke-RunnerTarballDeploy  - deploys a runner tarball to a VM's cache
@@ -16,13 +17,28 @@
 
     Each function lives in its own file under Public\ and is dot-sourced
     below so diffs stay focused on a single function per commit.
+
+    Private\ holds the same one-function-per-file layout for helpers that are
+    implementation detail rather than public surface: response parsing under
+    StrictMode, header reads, and the conditional-GET wrapper that keeps a
+    polling caller off the rate limit. They are dot-sourced FIRST so the
+    Public functions can call them, and are deliberately absent from both
+    export lists - adding one is not a public contract change.
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. "$PSScriptRoot\Private\ConvertFrom-GitHubTimestamp.ps1"
+. "$PSScriptRoot\Private\Get-GitHubJobCurrentStep.ps1"
+. "$PSScriptRoot\Private\Get-GitHubResponseProperty.ps1"
+. "$PSScriptRoot\Private\Get-HttpHeaderValue.ps1"
+. "$PSScriptRoot\Private\Invoke-GitHubConditionalGet.ps1"
+. "$PSScriptRoot\Private\New-GitHubRequestHeader.ps1"
+
 . "$PSScriptRoot\Public\Invoke-GitHubApi.ps1"
 . "$PSScriptRoot\Public\Get-GitHubAppToken.ps1"
+. "$PSScriptRoot\Public\Get-GitHubRunnerActivity.ps1"
 . "$PSScriptRoot\Public\Get-PendingDeployment.ps1"
 . "$PSScriptRoot\Public\Invoke-RunnerTarballDeploy.ps1"
 . "$PSScriptRoot\Public\Invoke-RunnerTarballEnsure.ps1"
@@ -36,6 +52,7 @@ $ErrorActionPreference = 'Stop'
 # run-unit-tests action enforces that every Public\*.ps1 file appears in both.
 Export-ModuleMember -Function @(
     'Get-GitHubAppToken',
+    'Get-GitHubRunnerActivity',
     'Get-PendingDeployment',
     'Invoke-GitHubApi',
     'Invoke-RunnerTarballDeploy',
