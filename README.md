@@ -7,6 +7,7 @@ PowerShell module providing GitHub API utilities for infrastructure repos.
 - [Overview](#overview)
 - [Functions](#functions)
 - [Usage](#usage)
+  - [Retry behaviour](#retry-behaviour)
   - [Polling without exhausting the rate limit](#polling-without-exhausting-the-rate-limit)
 - [Development](#development)
   - [Prerequisites](#prerequisites)
@@ -24,7 +25,7 @@ consumed by other repos.
 
 | Function | Description |
 |---|---|
-| `Invoke-GitHubApi` | General-purpose GitHub REST API caller. Handles auth, `User-Agent`, and JSON serialization. Accepts `-Endpoint` (relative path) or `-Uri` (full URL). `-IncludeResponseDetail` returns headers and status code for conditional (ETag) requests. |
+| `Invoke-GitHubApi` | General-purpose GitHub REST API caller. Handles auth, `User-Agent`, JSON serialization, and [transient-failure retry](#retry-behaviour). Accepts `-Endpoint` (relative path) or `-Uri` (full URL). `-IncludeResponseDetail` returns headers and status code for conditional (ETag) requests. |
 | `Get-GitHubAppToken` | Mints a short-lived installation access token for a GitHub App using RS256 JWT signing. Returns `Token` and `ExpiresAt`. |
 | `Get-GitHubRunnerActivity` | One row per registered self-hosted runner, joined to the job it is executing (workflow, job, current step, elapsed), plus the jobs queued against that fleet. Built for repeated polling. |
 | `Get-PendingDeployment` | Returns the oldest non-terminal deployment for a given repo and environment, or `$null` when none is pending. |
@@ -33,9 +34,10 @@ consumed by other repos.
 | `Invoke-RunnerTarballDeploy` | Ensures the `actions/runner` tarball is present in the runner user's cache directory on a remote Linux host, fetching it with `curl` over SSH and purging stale versions first. The Linux-side complement to `Invoke-RunnerTarballEnsure`. |
 
 Helpers under `Infrastructure.GitHub\Private\` (response parsing under
-`StrictMode`, header reads, the conditional-GET wrapper) are implementation
-detail: they follow the same one-function-per-file layout but are absent from
-both export lists, so adding one is not a public contract change.
+`StrictMode`, header reads, the conditional-GET wrapper, the retry-policy
+pair) are implementation detail: they follow the same one-function-per-file
+layout but are absent from both export lists, so adding one is not a public
+contract change.
 
 ## Usage
 
@@ -43,6 +45,38 @@ both export lists, so adding one is not a public contract change.
 Install-Module -Name Infrastructure.GitHub -MinimumVersion 0.1.0
 Import-Module Infrastructure.GitHub
 ```
+
+`Common.PowerShell` (>= 8.1.0) is declared in `RequiredModules` and comes down
+with the install - `Invoke-GitHubApi` uses its retry primitives. Nothing to
+import by hand.
+
+### Retry behaviour
+
+`Invoke-GitHubApi` retries transient failures on its own, so callers do not
+wrap it. The policy is chosen by HTTP method, because replaying a read and
+replaying a write are not equally safe:
+
+| Method | Policy | Retried |
+|---|---|---|
+| `GET` / `HEAD` / `OPTIONS` | `Common.PowerShell`'s `New-TransientNetworkRetryStrategy` | DNS failures, dropped connections, timeouts, 5xx |
+| everything else | private `New-GitHubWriteRetryStrategy` | Only failures that provably never reached GitHub - name resolution and connect-establishment socket errors |
+
+A write is held to the narrower bar because a timeout or a lost 5xx can mean
+GitHub already acted on the request; replaying one would mint a second
+registration token or remove a runner twice. `4xx` is permanent under both,
+so a bad token or a mistyped repo fails fast rather than sleeping through the
+attempt budget.
+
+Attempts and pacing come from `Invoke-WithRetry`'s defaults: three attempts,
+exponential backoff. A caller that needs a longer horizon - waiting for a
+runner to come online, say - should keep its own poll loop; that loop is
+waiting on *state*, which is a separate concern from surviving a flaky hop.
+
+`-IncludeResponseDetail` follows the same policy. Its `SkipHttpErrorCheck`
+means a 5xx arrives as a return value rather than an exception, so the
+function re-raises it internally to keep both paths on one policy, then
+returns the final response once the attempts are spent. The switch still
+never throws on a bad status: the caller owns all status handling.
 
 ### Polling without exhausting the rate limit
 
