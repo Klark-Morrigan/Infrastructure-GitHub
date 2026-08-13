@@ -31,6 +31,19 @@
 #   the module's own parent scope and $PSCmdlet.SessionState.PSVariable.Set
 #   lands in the callee's - both silently, with the caller's variable left
 #   untouched. A return value crosses the boundary unambiguously.
+#
+#   RETRY
+#   Every call is retried, but the policy is chosen by method because the
+#   two cases are not equally safe:
+#     - Reads (GET/HEAD/OPTIONS) get Common.PowerShell's full
+#       transient-network policy: DNS hiccups, dropped connections,
+#       timeouts and 5xx responses. A replayed read cannot do harm.
+#     - Writes get New-GitHubWriteRetryStrategy, which matches only
+#       failures that provably never reached GitHub. Retrying a POST after
+#       a timeout or a lost 5xx response could mint a second registration
+#       token or double-execute a runner removal.
+#   4xx responses are permanent under both policies, so a bad token or a
+#   mistyped repo still fails fast instead of sleeping through the budget.
 # ---------------------------------------------------------------------------
 
 function Invoke-GitHubApi {
@@ -110,12 +123,29 @@ function Invoke-GitHubApi {
         $params['Body'] = $Body | ConvertTo-Json -Depth 10 -Compress
     }
 
+    # See the RETRY note in the file header for why the policy is chosen by
+    # method rather than applied uniformly.
+    $retryStrategy = if (Test-GitHubIdempotentMethod -Method $Method) {
+        New-TransientNetworkRetryStrategy
+    } else {
+        New-GitHubWriteRetryStrategy
+    }
+
+    # Surfaced in Invoke-WithRetry's per-attempt warning. The token is
+    # deliberately absent - that warning reaches operator-visible logs.
+    $operationName = "GitHub API $Method $resolvedUri"
+
     if (-not $IncludeResponseDetail) {
-        return Invoke-RestMethod @params
+        return Invoke-WithRetry `
+            -ScriptBlock   { Invoke-RestMethod @params } `
+            -RetryStrategy $retryStrategy `
+            -OperationName $operationName
     }
 
     # Invoke-RestMethod writes these into the scope of ITS caller, which is
-    # this function - a direct, same-session-state hop that does work.
+    # the attempt block below - a direct, same-session-state hop that does
+    # work. The harvest has to stay inside that block for the same reason:
+    # each attempt writes into its own invocation scope.
     $localHeadersName = 'gitHubApiResponseHeaders'
     $localStatusName  = 'gitHubApiStatusCode'
 
@@ -123,15 +153,56 @@ function Invoke-GitHubApi {
     $params['StatusCodeVariable']      = $localStatusName
     $params['SkipHttpErrorCheck']      = $true
 
-    $content = Invoke-RestMethod @params
+    # SkipHttpErrorCheck is what makes a 304 observable, but it also means a
+    # 5xx arrives as a return value instead of an exception - so on this path
+    # it would slip past the retry classifier that the ordinary path gets for
+    # free. Re-raise it as the HttpResponseException the cmdlet would have
+    # thrown so the same policy judges it, then hand the caller the final
+    # response once the attempts are spent. Nothing new escapes: -Include-
+    # ResponseDetail still never throws on a bad status, which is its
+    # documented contract.
+    #
+    # A hashtable carries the last response out because a plain assignment
+    # inside the attempt block would land in that block's own scope.
+    $httpLowestServerError = 500
+    $lastDetail            = @{ Value = $null }
 
-    # Get-Variable rather than a bare reference: a mocked Invoke-RestMethod
-    # (the unit suites) never assigns these, and Set-StrictMode -Version
-    # Latest makes reading an unassigned variable a terminating error.
-    # SilentlyContinue yields $null, the honest answer for "no headers".
-    [PSCustomObject]@{
-        Content    = $content
-        Headers    = Get-Variable -Name $localHeadersName -ValueOnly -ErrorAction SilentlyContinue
-        StatusCode = Get-Variable -Name $localStatusName  -ValueOnly -ErrorAction SilentlyContinue
+    $attemptRequest = {
+        $content = Invoke-RestMethod @params
+
+        # Get-Variable rather than a bare reference: a mocked Invoke-RestMethod
+        # (the unit suites) never assigns these, and Set-StrictMode -Version
+        # Latest makes reading an unassigned variable a terminating error.
+        # SilentlyContinue yields $null, the honest answer for "no headers".
+        $detail = [PSCustomObject]@{
+            Content    = $content
+            Headers    = Get-Variable -Name $localHeadersName -ValueOnly -ErrorAction SilentlyContinue
+            StatusCode = Get-Variable -Name $localStatusName  -ValueOnly -ErrorAction SilentlyContinue
+        }
+        $lastDetail.Value = $detail
+
+        if ($null -ne $detail.StatusCode -and
+            [int] $detail.StatusCode -ge $httpLowestServerError) {
+            throw [Microsoft.PowerShell.Commands.HttpResponseException]::new(
+                "$operationName returned HTTP $($detail.StatusCode).",
+                [System.Net.Http.HttpResponseMessage]::new(
+                    [System.Net.HttpStatusCode] [int] $detail.StatusCode))
+        }
+
+        return $detail
+    }
+
+    try {
+        return Invoke-WithRetry `
+            -ScriptBlock   $attemptRequest `
+            -RetryStrategy $retryStrategy `
+            -OperationName $operationName
+    }
+    catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+        # The built-in error check is off on this path, so this type can only
+        # have come from the throw above - the retries are spent on a 5xx (or
+        # the write policy declined to retry it at all). Either way the caller
+        # owns status handling and wants the response, not an exception.
+        return $lastDetail.Value
     }
 }

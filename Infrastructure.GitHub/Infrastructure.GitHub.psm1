@@ -20,9 +20,10 @@
 
     Private\ holds the same one-function-per-file layout for helpers that are
     implementation detail rather than public surface: response parsing under
-    StrictMode, header reads, and the conditional-GET wrapper that keeps a
-    polling caller off the rate limit. They are dot-sourced FIRST so the
-    Public functions can call them, and are deliberately absent from both
+    StrictMode, header reads, the conditional-GET wrapper that keeps a
+    polling caller off the rate limit, and the retry-policy pair that decides
+    what Invoke-GitHubApi may safely re-send. They are dot-sourced FIRST so
+    the Public functions can call them, and are deliberately absent from both
     export lists - adding one is not a public contract change.
 #>
 
@@ -35,6 +36,8 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\Private\Get-HttpHeaderValue.ps1"
 . "$PSScriptRoot\Private\Invoke-GitHubConditionalGet.ps1"
 . "$PSScriptRoot\Private\New-GitHubRequestHeader.ps1"
+. "$PSScriptRoot\Private\New-GitHubWriteRetryStrategy.ps1"
+. "$PSScriptRoot\Private\Test-GitHubIdempotentMethod.ps1"
 
 . "$PSScriptRoot\Public\Invoke-GitHubApi.ps1"
 . "$PSScriptRoot\Public\Get-GitHubAppToken.ps1"

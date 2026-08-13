@@ -1,4 +1,45 @@
 BeforeAll {
+    # Faithful-but-sleepless stand-in for Common.PowerShell's Invoke-WithRetry.
+    # It replicates the documented contract this function depends on - run the
+    # block, on failure consult RetryStrategy.ShouldRetry, loop up to
+    # MaxAttempts, otherwise propagate - without the real backoff sleeps.
+    # Retry *mechanics* are covered by Common.PowerShell's own tests; here we
+    # exercise the policy selection and the 5xx re-raise this function owns.
+    function Invoke-WithRetry {
+        param(
+            [scriptblock] $ScriptBlock,
+            [hashtable[]] $RetryStrategy,
+            [hashtable]   $BackoffStrategy,
+            [int]         $MaxAttempts = 3,
+            [string]      $OperationName
+        )
+        $script:CapturedStrategies    = $RetryStrategy
+        $script:CapturedOperationName = $OperationName
+        for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+            try { return & $ScriptBlock }
+            catch {
+                $err     = $_
+                $matched = $RetryStrategy |
+                    Where-Object { & $_.ShouldRetry $err } |
+                    Select-Object -First 1
+                if (-not $matched -or $attempt -ge $MaxAttempts) { throw }
+            }
+        }
+    }
+
+    # Stand-ins for the two strategy factories. Their classification logic is
+    # tested where it lives (Common.PowerShell's suite, and this repo's
+    # New-GitHubWriteRetryStrategy.Tests.ps1); what matters here is only
+    # WHICH of them Invoke-GitHubApi hands to the retry loop, so each is
+    # reduced to a fixed verdict that makes the selection observable.
+    function New-TransientNetworkRetryStrategy {
+        @{ Name = 'TransientNetwork'; ShouldRetry = { param($e) $true } }
+    }
+    function New-GitHubWriteRetryStrategy {
+        @{ Name = 'GitHubConnectFailure'; ShouldRetry = { param($e) $false } }
+    }
+
+    . "$PSScriptRoot\..\Infrastructure.GitHub\Private\Test-GitHubIdempotentMethod.ps1"
     . "$PSScriptRoot\..\Infrastructure.GitHub\Public\Invoke-GitHubApi.ps1"
 }
 
@@ -198,6 +239,83 @@ Describe 'Invoke-GitHubApi' {
     }
 
     # ------------------------------------------------------------------
+    Context 'retry policy selection' {
+    # ------------------------------------------------------------------
+    # A read may be replayed freely; a write may only be replayed when the
+    # request provably never reached GitHub, or a retry double-executes it.
+
+        It 'gives a GET the full transient-network policy' {
+            Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test'
+
+            $script:CapturedStrategies.Name | Should -Be 'TransientNetwork'
+        }
+
+        It 'gives a HEAD the full transient-network policy' {
+            Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' -Method 'Head'
+
+            $script:CapturedStrategies.Name | Should -Be 'TransientNetwork'
+        }
+
+        It 'matches the method case-insensitively' {
+            Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' -Method 'get'
+
+            $script:CapturedStrategies.Name | Should -Be 'TransientNetwork'
+        }
+
+        It 'restricts a POST to the connect-failure policy' {
+            Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' -Method 'Post'
+
+            $script:CapturedStrategies.Name | Should -Be 'GitHubConnectFailure'
+        }
+
+        It 'restricts a DELETE to the connect-failure policy' {
+            Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' -Method 'Delete'
+
+            $script:CapturedStrategies.Name | Should -Be 'GitHubConnectFailure'
+        }
+
+        It 'labels the operation with the method and URI' {
+            Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' -Method 'Post'
+
+            $script:CapturedOperationName |
+                Should -Be 'GitHub API Post https://api.github.com/test'
+        }
+
+        It 'keeps the token out of the operation label' {
+            # The label reaches operator-visible logs through the per-attempt
+            # retry warning.
+            Invoke-GitHubApi -Token 'ghp_secret' -Uri 'https://api.github.com/test'
+
+            $script:CapturedOperationName | Should -Not -Match 'ghp_secret'
+        }
+
+        It 'retries a read that fails transiently' {
+            $script:_calls = 0
+            Mock Invoke-RestMethod {
+                $script:_calls++
+                if ($script:_calls -lt 3) { throw 'boom' }
+                [PSCustomObject]@{ id = 42 }
+            }
+
+            $result = Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test'
+
+            $script:_calls | Should -Be 3
+            $result.id     | Should -Be 42
+        }
+
+        It 'does not replay a write the policy declines to retry' {
+            $script:_calls = 0
+            Mock Invoke-RestMethod { $script:_calls++; throw 'boom' }
+
+            {
+                Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' -Method 'Post'
+            } | Should -Throw
+
+            $script:_calls | Should -Be 1
+        }
+    }
+
+    # ------------------------------------------------------------------
     Context 'return value' {
     # ------------------------------------------------------------------
 
@@ -272,5 +390,103 @@ Describe 'Invoke-GitHubApi response detail harvesting' {
                       -IncludeResponseDetail
 
         $result.Content.id | Should -Be 42
+    }
+}
+
+# ----------------------------------------------------------------------
+# -IncludeResponseDetail turns SkipHttpErrorCheck on, so a 5xx arrives as a
+# return value rather than an exception and would otherwise never reach the
+# retry classifier - the asymmetry this Describe pins down. Needs the same
+# shadow-function harness as the block above, because the behaviour under
+# test is driven entirely by the harvested status code, which a Pester mock
+# cannot write into the caller's frame.
+# ----------------------------------------------------------------------
+Describe 'Invoke-GitHubApi response detail retry' {
+
+    BeforeAll {
+        # Serves one status per call from a queue, so a test can express
+        # "502 then 200" and assert the retry actually happened.
+        function Invoke-RestMethod {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+                'PSAvoidOverwritingBuiltInCmdlets', '',
+                Justification = 'Intentional in-scope test double for Invoke-RestMethod.')]
+            param(
+                $Uri, $Method, $Headers, $Body, $ErrorAction,
+                [string] $ResponseHeadersVariable,
+                [string] $StatusCodeVariable,
+                [switch] $SkipHttpErrorCheck
+            )
+            $script:DetailCalls++
+            $status = if ($script:StatusQueue.Count -gt 0) {
+                $script:StatusQueue.Dequeue()
+            } else {
+                $script:LastStatus
+            }
+            $script:LastStatus = $status
+            if ($StatusCodeVariable) {
+                Set-Variable -Name $StatusCodeVariable -Scope 1 -Value $status
+            }
+            [PSCustomObject]@{ id = 42 }
+        }
+    }
+
+    BeforeEach {
+        $script:DetailCalls = 0
+        $script:LastStatus  = 200
+        $script:StatusQueue = [System.Collections.Queue]::new()
+    }
+
+    It 'retries a 5xx observed on a read and returns the eventual success' {
+        $script:StatusQueue.Enqueue(502)
+        $script:StatusQueue.Enqueue(200)
+
+        $result = Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' `
+                      -IncludeResponseDetail
+
+        $script:DetailCalls   | Should -Be 2
+        $result.StatusCode    | Should -Be 200
+        $result.Content.id    | Should -Be 42
+    }
+
+    It 'returns the final response rather than throwing when the retries run out' {
+        # The no-throw contract of -IncludeResponseDetail survives a 5xx that
+        # never recovers: the caller still owns status handling.
+        $script:StatusQueue.Enqueue(503)
+
+        $result = Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' `
+                      -IncludeResponseDetail
+
+        $result.StatusCode | Should -Be 503
+        $result.Content.id | Should -Be 42
+    }
+
+    It 'does not retry a 5xx on a write' {
+        $script:StatusQueue.Enqueue(503)
+
+        $result = Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' `
+                      -Method 'Post' -IncludeResponseDetail
+
+        $script:DetailCalls | Should -Be 1
+        $result.StatusCode  | Should -Be 503
+    }
+
+    It 'does not retry a 304' {
+        $script:StatusQueue.Enqueue(304)
+
+        $result = Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' `
+                      -IncludeResponseDetail
+
+        $script:DetailCalls | Should -Be 1
+        $result.StatusCode  | Should -Be 304
+    }
+
+    It 'does not retry a 4xx' {
+        $script:StatusQueue.Enqueue(404)
+
+        $result = Invoke-GitHubApi -Token 't' -Uri 'https://api.github.com/test' `
+                      -IncludeResponseDetail
+
+        $script:DetailCalls | Should -Be 1
+        $result.StatusCode  | Should -Be 404
     }
 }
