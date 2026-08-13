@@ -12,6 +12,40 @@ history and the tag list.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-13
+
+### Fixed
+- `Invoke-GitHubApi` now retries transient failures instead of surfacing them
+  on the first attempt. A DNS hiccup on the host resolver - which arrives as
+  `No such host is known. (api.github.com:443)` and killed a whole E2E run
+  where the caller's own poll loop only ever retried the *state* it was
+  waiting on - is now ridden out.
+
+  The policy is chosen by method, because the two cases are not equally safe
+  to replay:
+  - Reads (`GET`/`HEAD`/`OPTIONS`) use Common.PowerShell's
+    `New-TransientNetworkRetryStrategy`: DNS failures, dropped connections,
+    timeouts and 5xx responses.
+  - Writes use the new private `New-GitHubWriteRetryStrategy`, which matches
+    only failures that provably never reached GitHub (name resolution and
+    connect-establishment socket errors). Timeouts and lost 5xx responses are
+    treated as permanent there: GitHub may already have minted the
+    registration token or removed the runner, and a replay would double-execute.
+
+  4xx stays permanent under both, so a bad token or a mistyped repo still
+  fails fast.
+
+### Changed
+- `-IncludeResponseDetail` no longer sits outside the retry policy. Because
+  `SkipHttpErrorCheck` turns a 5xx into a return value rather than an
+  exception, that path silently skipped the retry a plain call received - so
+  a transient 502 on the conditional-GET polling path failed hard while the
+  same 502 on an ordinary call was retried. Both paths now share one policy.
+  The switch's contract is unchanged: it still never throws on a bad status,
+  and the caller still owns all status handling.
+- `RequiredModules` now declares `Common.PowerShell` (floor 8.1.0), which
+  supplies the retry primitives.
+
 ## [1.2.0] - 2026-08-06
 
 ### Added
