@@ -24,15 +24,20 @@ function Get-GitHubRunnerActivity {
             executing anything, so an idle repo skips that fan-out entirely.
           - The per-run jobs call is never cached. A job stepping forward does
             not alter the parent run object, so a cached run list would answer
-            304 while the step an operator is watching moves on.
+            304 while the step an operator is watching moves on. It is withheld
+            from the cache rather than routed around the conditional caller,
+            which keeps the largest consumer on a busy tick inside .RateLimit.
 
         Queued jobs are reported separately, filtered to those whose requested
         labels intersect the labels our runners advertise - a job waiting on a
         GitHub-hosted image is not this fleet's business.
 
-        A repository that fails (auth, rate limit, network) is recorded in
-        .Failures and the remaining repositories still report. One bad repo
-        must not blank the whole board.
+        Failures degrade the report rather than empty it. A repository that
+        cannot be polled at all (auth, rate limit, network) is recorded in
+        .Failures and the remaining repositories still report; a single run
+        whose jobs cannot be read is recorded there too, and its repository
+        still reports every runner row, with the affected runner reading busy
+        but carrying no job detail.
 
     .PARAMETER Token
         Bearer token (PAT or GitHub App installation token). Needs read access
@@ -55,9 +60,13 @@ function Get-GitHubRunnerActivity {
           .QueuedJobs - jobs waiting for a runner in this fleet: Repository,
                         WorkflowName, JobName, Labels, QueuedAt (UTC), Url.
           .Failures   - Repository + Message for each repo that could not be
-                        polled.
+                        polled, and for each individual run whose jobs could
+                        not be read. A repository can therefore appear in both
+                        .Runners and .Failures.
           .RateLimit  - Remaining, Limit, ResetsAt (UTC) from the last response
-                        that carried the headers; $null if none did.
+                        that carried the headers; $null if none did. Every
+                        request the function makes reports into it, the
+                        uncached per-run jobs calls included.
 
     .EXAMPLE
         $cache = @{}
@@ -155,12 +164,30 @@ function Get-GitHubRunnerActivity {
                 # list calls could appear under both statuses.
                 if ($null -eq $runId -or -not $seenRunIds.Add([long] $runId)) { continue }
 
-                $jobsBody = Invoke-GitHubApi `
-                    -Token    $Token `
-                    -Header   (New-GitHubRequestHeader) `
-                    -Endpoint "repos/$slug/actions/runs/$runId/jobs?per_page=$maxItemsPerPage"
+                try {
+                    # -Cache $null is the deliberate half of this call; see the
+                    # call-pattern notes in .DESCRIPTION for why.
+                    $jobsResponse = Invoke-GitHubConditionalGet `
+                        -Token    $Token `
+                        -Cache    $null `
+                        -Endpoint "repos/$slug/actions/runs/$runId/jobs?per_page=$maxItemsPerPage"
+                }
+                catch {
+                    # One unreadable run must not cost the repository its whole
+                    # board. The runner rows below come from the runners call,
+                    # which succeeded well before this point, and the row shape
+                    # already allows for a busy runner with no detail attached.
+                    # Record what was lost and carry on with the other runs.
+                    $failures.Add([PSCustomObject]@{
+                        Repository = $slug
+                        Message    = "run $runId jobs: $($_.Exception.Message)"
+                    })
+                    continue
+                }
 
-                foreach ($job in @(Get-GitHubResponseProperty $jobsBody 'jobs' @())) {
+                if ($null -ne $jobsResponse.RateLimit) { $rateLimit = $jobsResponse.RateLimit }
+
+                foreach ($job in @(Get-GitHubResponseProperty $jobsResponse.Value 'jobs' @())) {
                     $jobStatus  = Get-GitHubResponseProperty $job 'status'
                     $runnerName = Get-GitHubResponseProperty $job 'runner_name'
 
