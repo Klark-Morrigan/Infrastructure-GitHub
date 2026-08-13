@@ -44,6 +44,14 @@ Describe 'Get-GitHubRunnerActivity' {
             Limit     = 5000
             ResetsAt  = [DateTime]::new(2026, 8, 6, 12, 0, 0, [DateTimeKind]::Utc)
         }
+        # A deliberately lower reading for the per-run jobs calls. The list
+        # calls all run before the jobs fan-out, so a result still carrying
+        # the list reading is proof the jobs calls went unaccounted for.
+        $script:jobsRateLimitPayload  = [PSCustomObject]@{
+            Remaining = 4000
+            Limit     = 5000
+            ResetsAt  = [DateTime]::new(2026, 8, 6, 12, 0, 0, [DateTimeKind]::Utc)
+        }
 
         # The two I/O boundaries. Everything below them (parsing, joining,
         # label filtering) is the code under test and stays real.
@@ -52,11 +60,25 @@ Describe 'Get-GitHubRunnerActivity' {
                 if     ($Endpoint -match '/actions/runners') { $script:runnersPayload }
                 elseif ($Endpoint -match 'status=in_progress') { $script:inProgressRunsPayload }
                 elseif ($Endpoint -match 'status=queued') { $script:queuedRunsPayload }
+                elseif ($Endpoint -match '/jobs') { $script:jobsPayload }
                 else { $null }
 
-            [PSCustomObject]@{ Value = $value; RateLimit = $script:rateLimitPayload }
+            $budget = if ($Endpoint -match '/jobs') {
+                $script:jobsRateLimitPayload
+            } else {
+                $script:rateLimitPayload
+            }
+
+            [PSCustomObject]@{ Value = $value; RateLimit = $budget }
         }
-        Mock Invoke-GitHubApi { $script:jobsPayload }
+
+        # Every read this function makes goes through the conditional caller,
+        # the uncached jobs one included - that is what keeps the budget
+        # accounting complete. Fail loudly on a direct call rather than let a
+        # regression reach the wire unmocked.
+        Mock Invoke-GitHubApi {
+            throw "Unexpected direct Invoke-GitHubApi call: $Endpoint"
+        }
     }
 
     # ------------------------------------------------------------------
@@ -183,7 +205,7 @@ Describe 'Get-GitHubRunnerActivity' {
 
             $null = Get-GitHubRunnerActivity -Token 't' -Repository 'owner/repo'
 
-            Should -Invoke Invoke-GitHubApi -Times 1 -Exactly `
+            Should -Invoke Invoke-GitHubConditionalGet -Times 1 -Exactly `
                 -ParameterFilter { $Endpoint -match '/runs/900/jobs' }
         }
     }
@@ -232,11 +254,11 @@ Describe 'Get-GitHubRunnerActivity' {
 
             $null = Get-GitHubRunnerActivity -Token 't' -Repository 'owner/repo' -Cache @{}
 
-            # The jobs read goes through the plain caller, not the conditional
-            # one - that is what keeps it off the cache.
-            Should -Invoke Invoke-GitHubApi -ParameterFilter { $Endpoint -match '/jobs' }
-            Should -Invoke Invoke-GitHubConditionalGet -Times 0 -Exactly `
-                -ParameterFilter { $Endpoint -match '/jobs' }
+            # Withholding the cache - not bypassing the conditional caller - is
+            # what keeps the jobs read off the cache, so the budget accounting
+            # inside that caller still applies to it.
+            Should -Invoke Invoke-GitHubConditionalGet -Times 1 -Exactly `
+                -ParameterFilter { $Endpoint -match '/jobs' -and $null -eq $Cache }
         }
 
         It 'surfaces the rate-limit reading from the responses' {
@@ -244,6 +266,22 @@ Describe 'Get-GitHubRunnerActivity' {
 
             $result.RateLimit.Remaining | Should -Be 4987
             $result.RateLimit.Limit     | Should -Be 5000
+        }
+
+        It 'counts the per-run jobs calls against the reported budget' {
+            # The jobs fan-out is the largest consumer on a busy tick - it is
+            # never served from cache, so every run costs a request. A budget
+            # that reports only the list calls understates consumption exactly
+            # when an operator most needs the true number.
+            $script:runnersPayload = ConvertTo-ApiPayload @'
+{ "runners": [ { "id": 1, "name": "r1", "status": "online", "busy": true,
+                "labels": [ { "name": "self-hosted" } ] } ] }
+'@
+            $script:inProgressRunsPayload = ConvertTo-ApiPayload '{ "workflow_runs": [ { "id": 900 } ] }'
+
+            $result = Get-GitHubRunnerActivity -Token 't' -Repository 'owner/repo'
+
+            $result.RateLimit.Remaining | Should -Be 4000
         }
     }
 
@@ -338,6 +376,66 @@ Describe 'Get-GitHubRunnerActivity' {
             $result.Failures.Count | Should -Be 1
             $result.Runners.Count  | Should -Be 2
             $result.Runners[0].Repository | Should -Be 'owner/good'
+        }
+    }
+
+    # ------------------------------------------------------------------
+    Context 'a run whose jobs cannot be read' {
+    # ------------------------------------------------------------------
+
+        # The per-run jobs read is the most exposed call in the function: one
+        # per open run, never served from cache, so the first to feel a rate
+        # limit or a transient 5xx. Losing it costs the detail on that one run
+        # - it must not cost the repository its board, because the runners
+        # list that produces those rows has already succeeded by then.
+        BeforeEach {
+            $script:runnersPayload = ConvertTo-ApiPayload @'
+{ "runners": [ { "id": 1, "name": "r1", "status": "online", "busy": true,
+                "labels": [ { "name": "self-hosted" } ] } ] }
+'@
+            $script:inProgressRunsPayload =
+                ConvertTo-ApiPayload '{ "workflow_runs": [ { "id": 900 }, { "id": 901 } ] }'
+            $script:jobsPayload = ConvertTo-ApiPayload @'
+{ "jobs": [ { "id": 5000, "name": "build", "status": "in_progress",
+             "workflow_name": "CI", "runner_name": "r1" } ] }
+'@
+
+            # Run 900 fails, run 901 answers.
+            Mock Invoke-GitHubConditionalGet {
+                if ($Endpoint -match '/runs/900/jobs') { throw 'HTTP 502 Bad Gateway' }
+
+                $value =
+                    if     ($Endpoint -match '/actions/runners') { $script:runnersPayload }
+                    elseif ($Endpoint -match 'status=in_progress') { $script:inProgressRunsPayload }
+                    elseif ($Endpoint -match 'status=queued') { $script:queuedRunsPayload }
+                    elseif ($Endpoint -match '/jobs') { $script:jobsPayload }
+                    else { $null }
+
+                [PSCustomObject]@{ Value = $value; RateLimit = $script:rateLimitPayload }
+            }
+        }
+
+        It 'keeps the runner rows the runners call already produced' {
+            $result = Get-GitHubRunnerActivity -Token 't' -Repository 'owner/repo'
+
+            $result.Runners.Count   | Should -Be 1
+            $result.Runners[0].Name | Should -Be 'r1'
+            $result.Runners[0].Busy | Should -BeTrue
+        }
+
+        It 'opens the remaining runs instead of abandoning the repository' {
+            $result = Get-GitHubRunnerActivity -Token 't' -Repository 'owner/repo'
+
+            $result.Runners[0].JobName | Should -Be 'build'
+        }
+
+        It 'records the run it could not open' {
+            $result = Get-GitHubRunnerActivity -Token 't' -Repository 'owner/repo'
+
+            $result.Failures.Count         | Should -Be 1
+            $result.Failures[0].Repository | Should -Be 'owner/repo'
+            $result.Failures[0].Message    | Should -Match '502'
+            $result.Failures[0].Message    | Should -Match '900'
         }
     }
 

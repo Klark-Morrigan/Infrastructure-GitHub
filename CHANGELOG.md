@@ -22,6 +22,11 @@ history and the tag list.
   with) and the per-run jobs endpoint (which knows the work but is not
   addressable by runner); the function performs the join so callers do not
   have to. Backs the live runner dashboard in Infrastructure-GitHubRunners.
+  Failures degrade the report rather than empty it: an unpollable repository
+  and an individual run whose jobs cannot be read both land in `.Failures`,
+  and in the latter case the repository still reports every runner row. The
+  `.RateLimit` reading accounts for every request made, the uncached per-run
+  jobs calls included - on a busy tick those outnumber the list calls.
 - `Invoke-GitHubApi` gains `-Header` and `-IncludeResponseDetail`. Together
   they enable conditional (ETag) requests, which a polling caller needs to
   stay inside the hourly rate limit: GitHub does not charge a 304 Not

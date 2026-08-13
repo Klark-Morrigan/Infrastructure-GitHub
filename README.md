@@ -30,6 +30,7 @@ consumed by other repos.
 | `Get-PendingDeployment` | Returns the oldest non-terminal deployment for a given repo and environment, or `$null` when none is pending. |
 | `Set-DeploymentStatus` | Posts a status update (`in_progress`, `success`, `failure`, etc.) to an existing deployment. |
 | `Invoke-RunnerTarballEnsure` | Ensures the `actions/runner` tarball for a given version is present in a local cache directory, downloading it if absent. |
+| `Invoke-RunnerTarballDeploy` | Ensures the `actions/runner` tarball is present in the runner user's cache directory on a remote Linux host, fetching it with `curl` over SSH and purging stale versions first. The Linux-side complement to `Invoke-RunnerTarballEnsure`. |
 
 Helpers under `Infrastructure.GitHub\Private\` (response parsing under
 `StrictMode`, header reads, the conditional-GET wrapper) are implementation
